@@ -89,3 +89,27 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+
+int
+sys_set_proc_info(void)
+{
+  int q_level, cpu_burst, cpu_wait_time, io_wait_time, end_time;
+
+  // 필요한 인자를 전부 받아오기
+  if(argint(0, &q_level) < 0 ||
+     argint(1, &cpu_burst) < 0 ||
+     argint(2, &cpu_wait_time) < 0 ||
+     argint(3, &io_wait_time) < 0 ||
+     argint(4, &end_time) < 0)
+    return -1;
+
+  struct proc *p = myproc(); // 현재 실행중인 프로세스를 받아와서 (fork한 프로세스)
+  // 프로세스 정보 변경
+  p->q_level = q_level;
+  p->cpu_burst = cpu_burst;
+  p->cpu_wait = cpu_wait_time;
+  p->io_wait_time = io_wait_time;
+  p->end_time = end_time;
+
+  return 0;
+}

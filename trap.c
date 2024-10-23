@@ -12,6 +12,10 @@
 struct gatedesc idt[256];
 extern uint vectors[];  // in vectors.S: array of 256 entry pointers
 struct spinlock tickslock;
+extern struct {
+  struct spinlock lock;
+  struct proc proc[NPROC];
+} ptable;
 uint ticks;
 
 void
@@ -56,6 +60,17 @@ trap(struct trapframe *tf)
 * 그리고, 각 코어마다 타이머 인터럽트가 발생하기 때문에 비효율적이다.
 * 따라서 CPU 0이 대표해서 Tick값을 관리하는것
 */
+      acquire(&ptable.lock); // 프로세스 관련 lock 획득
+      for(struct proc *p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+        if(p->state == RUNNABLE){
+          p->cpu_wait++;  // CPU 대기 시간 증가
+        }
+        else if(p->state == SLEEPING){
+          p->io_wait_time++;  // I/O 대기 시간 증가
+        }
+      }
+      release(&ptable.lock);
+
       acquire(&tickslock); // Tick 관련 lock 획득
       ticks++; // 틱 증가
       wakeup(&ticks); // ticks를 기다리는 프로세스들 깨우기
@@ -114,8 +129,40 @@ trap(struct trapframe *tf)
   // 트랩 사유가 타이머 인터럽트라면 yield() 함수를 호출해서 다른 프로세스를 선택한다.
   // 이를 통해 XV6의 기본적인 스케줄러 방식은 1Tick마다 CPU를 점유하는 프로세스가 달라지는 ROUND ROBIN 방식임을 알 수 있다.
   if(myproc() && myproc()->state == RUNNING &&
-     tf->trapno == T_IRQ0+IRQ_TIMER)
-    yield();
+     tf->trapno == T_IRQ0+IRQ_TIMER){
+
+    acquire(&ptable.lock); // process 상태 변경을 위한 lock 획득
+    myproc()->cpu_burst++; // cpu burst 시간 증가
+    myproc()->cpu_accumulate_time++; // cpu 축적 시간 층가
+
+    int current_tq; // 현재 큐의 타임 슬라이스 체크를 위한 변수
+    switch(myproc()->q_level) {
+      case 0: current_tq = TQ_0; break;
+      case 1: current_tq = TQ_1; break;
+      case 2: current_tq = TQ_2; break;
+      default: current_tq = TQ_3;
+    }
+
+    if (myproc()->cpu_burst >= current_tq) { // 만약 cpu burst 시간이 정해진 time slice를 다 채웠다면
+      if (myproc()->q_level < MAX_LEVEL) {
+        myproc()->q_level++;  // 큐 레벨 증가
+      }
+      myproc()->cpu_burst = 0;  // burst 시간 초기화
+      myproc()->cpu_wait = 0;    // wait 시간 초기화
+      myproc()->io_wait_time = 0; // io wait 시간 초기화
+      release(&ptable.lock);    // yield 전에 락 해제
+
+      yield();
+    }
+    else if (myproc()->cpu_accumulate_time >= myproc()->end_time &&
+               myproc()->end_time != -1) { // 만약 cpu 축적 시간이 정해진 실행 시간을 다 채웠고, 무한정 실행해야 하는게 아니라면
+      release(&ptable.lock);    // exit 전에 락 해제
+      exit();
+    }
+    else {
+      release(&ptable.lock);    // 일반적인 경우 락 해제
+    }
+  }
 
   // Check if the process has been killed since we yielded
   // CPU 양보 이후 (yield), 종료를 체크하는 부분

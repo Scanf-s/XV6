@@ -11,3 +11,15 @@
 #define LOGSIZE      (MAXOPBLOCKS*3)  // max data blocks in on-disk log
 #define NBUF         (MAXOPBLOCKS*3)  // size of disk block cache
 #define FSSIZE       1000  // size of file system in blocks
+
+// MLFQ constants
+#define NQUEUE 4         // 큐 개수
+#define MIN_LEVEL 0      // 최소 큐 레벨
+#define MAX_LEVEL 3      // 최대 큐 레벨
+
+#define TQ_0 10          // 최상위 큐 TQ
+#define TQ_1 20          // 2번째 큐 TQ
+#define TQ_2 40          // 3번째 큐 TQ
+#define TQ_3 80          // 최하위 큐 TQ
+
+#define AGING_THRESHOLD 250 // Aging 적용 기준 tick

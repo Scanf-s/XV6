@@ -7,12 +7,12 @@
 #include "proc.h"
 #include "spinlock.h"
 
-// 프로세스 테이블 구조체
-struct {
-  struct spinlock lock;  // 프로세스 테이블 접근을 위한 락
-  struct proc proc[NPROC];  // 프로세스 배열
+struct { // 프로세스 테이블
+  struct spinlock lock;
+  struct proc proc[NPROC];
 } ptable;
 
+// 프로세스 테이블 구조체
 static struct proc *initproc; // pid 1번 init 프로세스에 대한 전역 구조체
 
 int nextpid = 1;
@@ -167,6 +167,12 @@ userinit(void)
   acquire(&ptable.lock);
 
   p->state = RUNNABLE;
+  p->q_level = 3; // init 프로세스는 무조건 최하위 큐에 위치시킨다.
+  p->cpu_burst = 0;
+  p->cpu_wait = 0;
+  p->io_wait_time = 0;
+  p->end_time = -1; // init이 종료되면 안되므로 -1로 설정
+  p->cpu_accumulate_time = 0;
 
   release(&ptable.lock);
 }
@@ -232,6 +238,11 @@ fork(void)
   pid = np->pid;
 
   acquire(&ptable.lock); // fork된 프로세스의 상태를 변경하기 위해 lock 획득
+
+  if (np->pid == 2) { // SHELL 프로세스라면 q_level 3으로 고정
+    // init.c를 보면, init 프로세스가 sh 프로세스를 생성하는것을 볼 수 있다. init은 1번이므로 당연히 2번은 sh 프로세스
+    np->q_level = 3;
+  }
 
   np->state = RUNNABLE; // state 변경
 
@@ -363,24 +374,47 @@ scheduler(void)
 
     // 프로세스 테이블을 순회하며 실행할 프로세스를 찾음
     acquire(&ptable.lock);  // 프로세스 테이블 접근을 위한 락 획득
-    for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){  // 프로세스 테이블의 모든 프로세스를 확인
-      if(p->state != RUNNABLE)  // RUNNABLE 상태가 아닌 프로세스는 스킵
-        continue;
 
-      // 선택된 프로세스로 전환
-      c->proc = p;  // 현재 CPU코어가 실행할 프로세스 설정
-      switchuvm(p);  // 프로세스의 페이지 테이블로 전환 (메모리 컨텍스트 전환)
-      p->state = RUNNING;  // 프로세스 상태를 RUNNING으로 변경
-
-      swtch(&(c->scheduler), p->context);  // CPU 레지스터 컨텍스트를 저장하고 프로세스의 컨텍스트로 전환
-      switchkvm();  // 커널의 페이지 테이블로 다시 전환
-
-      // 프로세스 실행이 완료됨
-      // 돌아오기 전에 프로세스는 자신의 상태를 변경했어야 함 (RUNNABLE, SLEEPING, ZOMBIE 등)
-      // 이 경우는 다른 함수에서 소개할것이다
-      c->proc = 0;  // CPU의 현재 프로세스 정보를 초기화
+    // Aging 메커니즘
+    for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+      if(p->state == RUNNABLE && p->cpu_wait >= AGING_THRESHOLD) { // 큐에서 대기한 시간이 250초 이상이라면
+        if (p->q_level > MIN_LEVEL) {
+          p->q_level--;
+          p->cpu_wait = 0;
+        }
+      }
+      else if (p->state == SLEEPING && p->io_wait_time >= AGING_THRESHOLD) { // SLEEP 상태가 250초 이상이라면
+        if (p->q_level > MIN_LEVEL) {
+          p->q_level--;
+          p->io_wait_time = 0;
+        }
+      }
     }
-    release(&ptable.lock);  // 프로세스 테이블 락 해제
+
+    // 우선순위 큐 순서대로 실행할 프로세스 찾기
+    int found = 0;  // 실행할 프로세스를 찾았는지 표시
+    for(int level = MIN_LEVEL; level <= MAX_LEVEL; level++) {
+      // 현재 레벨에서 실행 가능한 프로세스 찾기
+      for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+        if(p->state != RUNNABLE || p->q_level != level)
+          continue;
+
+        // 프로세스를 찾았으면 실행
+        c->proc = p;
+        switchuvm(p);
+        p->state = RUNNING;
+
+        swtch(&(c->scheduler), p->context);
+        switchkvm();
+
+        c->proc = 0;
+        found = 1;
+        break;
+      }
+      if(found) break;  // 프로세스를 찾았으면 상위 레벨 검사 중단
+    }
+
+    release(&ptable.lock);
   }
 }
 
