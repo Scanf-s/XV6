@@ -111,5 +111,9 @@ sys_set_proc_info(void)
   p->io_wait_time = io_wait_time;
   p->end_time = end_time;
 
+  #ifdef DEBUG
+  cprintf("Set_proc_info: pid %d, q_level %d, end_time %d\n",
+          p->pid, p->q_level, p->end_time);
+  #endif
   return 0;
 }

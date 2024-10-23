@@ -144,18 +144,53 @@ trap(struct trapframe *tf)
     }
 
     if (myproc()->cpu_burst >= current_tq) { // 만약 cpu burst 시간이 정해진 time slice를 다 채웠다면
+
+      cprintf("PID: %d uses %d ticks in mlfq[%d], total(%d/%d)\n",
+                myproc()->pid,
+                myproc()->cpu_burst,
+                myproc()->q_level,
+                myproc()->cpu_accumulate_time,
+                myproc()->end_time);
+
       if (myproc()->q_level < MAX_LEVEL) {
         myproc()->q_level++;  // 큐 레벨 증가
+        myproc()->cpu_burst = 0;  // burst 시간 초기화
+        myproc()->cpu_wait = 0;    // wait 시간 초기화
+        myproc()->io_wait_time = 0; // io wait 시간 초기화
       }
-      myproc()->cpu_burst = 0;  // burst 시간 초기화
-      myproc()->cpu_wait = 0;    // wait 시간 초기화
-      myproc()->io_wait_time = 0; // io wait 시간 초기화
+      else { // 최하위 큐에서는 CPU Burst만 초기화해야함
+        myproc()->cpu_burst = 0;  // burst 시간 초기화
+      }
       release(&ptable.lock);    // yield 전에 락 해제
+
+      #ifdef DEBUG
+      cprintf("Time quantum expired: pid %d, level %d, total_time %d\n",
+              myproc()->pid, myproc()->q_level,
+              myproc()->cpu_accumulate_time);
+      #endif
 
       yield();
     }
     else if (myproc()->cpu_accumulate_time >= myproc()->end_time &&
                myproc()->end_time != -1) { // 만약 cpu 축적 시간이 정해진 실행 시간을 다 채웠고, 무한정 실행해야 하는게 아니라면
+
+      cprintf("PID: %d uses %d ticks in mlfq[%d], total(%d/%d)\n",
+                myproc()->pid,
+                myproc()->cpu_accumulate_time - (myproc()->cpu_accumulate_time - myproc()->cpu_burst),
+                myproc()->q_level,
+                myproc()->end_time,  // 최종 누적값은 end_time과 같다.
+                myproc()->end_time);
+
+      cprintf("PID: %d, used %d ticks. terminated\n",
+                myproc()->pid,
+                myproc()->cpu_accumulate_time);
+
+      #ifdef DEBUG
+      cprintf("Process terminated: pid %d, level %d, total_time %d\n",
+              myproc()->pid, myproc()->q_level,
+              myproc()->cpu_accumulate_time);
+      #endif
+
       release(&ptable.lock);    // exit 전에 락 해제
       exit();
     }

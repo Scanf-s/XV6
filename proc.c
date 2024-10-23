@@ -248,6 +248,11 @@ fork(void)
 
   release(&ptable.lock);
 
+  #ifdef DEBUG
+  if (np->pid > 2)  // init과 shell 프로세스 제외
+    cprintf("Fork: pid %d created\n", np->pid);
+  #endif
+
   // 부모 프로세스에게는 자식의 PID를 반환하고,
   // 자식 프로세스는 np->tf->eax = 0으로 설정했으므로 0을 반환받게 된다.
   return pid;
@@ -381,6 +386,7 @@ scheduler(void)
         if (p->q_level > MIN_LEVEL) {
           p->q_level--;
           p->cpu_wait = 0;
+          cprintf("PID: %d Aging\n", p->pid);
         }
       }
       else if (p->state == SLEEPING && p->io_wait_time >= AGING_THRESHOLD) { // SLEEP 상태가 250초 이상이라면
@@ -392,26 +398,42 @@ scheduler(void)
     }
 
     // 우선순위 큐 순서대로 실행할 프로세스 찾기
-    int found = 0;  // 실행할 프로세스를 찾았는지 표시
     for(int level = MIN_LEVEL; level <= MAX_LEVEL; level++) {
+      struct proc *selected = 0; // 선택할 프로세스
+      int max_io_wait = -1; // 최대 IO 대기 시간
+      int latest_pid = -1; // 가장 최근에 선택한 프로세스 PID
+
       // 현재 레벨에서 실행 가능한 프로세스 찾기
       for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
         if(p->state != RUNNABLE || p->q_level != level)
           continue;
 
-        // 프로세스를 찾았으면 실행
-        c->proc = p;
-        switchuvm(p);
-        p->state = RUNNING;
+        // io_wait_time이 더 크거나, io_wait_time이 같고 PID가 더 큰(나중에 생성된) 프로세스 선택
+        if(p->io_wait_time > max_io_wait ||
+           (p->io_wait_time == max_io_wait && p->pid > latest_pid)) {
+          max_io_wait = p->io_wait_time;
+          latest_pid = p->pid;
+          selected = p;
+        }
 
-        swtch(&(c->scheduler), p->context);
-        switchkvm();
+        if (selected) {
+          // 프로세스를 찾았으면 실행
+          c->proc = p;
+          switchuvm(p);
+          p->state = RUNNING;
 
-        c->proc = 0;
-        found = 1;
-        break;
+          #ifdef DEBUG
+          cprintf("Scheduler selected: PID: %d, NAME: %s\n",
+                  p->pid, p->name);
+          #endif
+          swtch(&(c->scheduler), p->context);
+          switchkvm();
+
+          c->proc = 0;
+          break;
+        }
       }
-      if(found) break;  // 프로세스를 찾았으면 상위 레벨 검사 중단
+      if(selected) break;  // 프로세스를 찾았으면 상위 레벨 검사 중단
     }
 
     release(&ptable.lock);
