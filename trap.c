@@ -135,68 +135,49 @@ trap(struct trapframe *tf)
     myproc()->cpu_burst++; // cpu burst 시간 증가
     myproc()->cpu_accumulate_time++; // cpu 축적 시간 층가
 
-    int current_tq; // 현재 큐의 타임 슬라이스 체크를 위한 변수
-    switch(myproc()->q_level) {
-      case 0: current_tq = TQ_0; break;
-      case 1: current_tq = TQ_1; break;
-      case 2: current_tq = TQ_2; break;
-      default: current_tq = TQ_3;
+    // end_time에 도달했는지 체크
+    if (myproc()->cpu_accumulate_time >= myproc()->end_time && 
+        myproc()->end_time != -1) {
+        cprintf("PID: %d uses %d ticks in mlfq[%d], total(%d/%d)\n",
+                myproc()->pid,
+                myproc()->cpu_burst,
+                myproc()->q_level,
+                myproc()->end_time,
+                myproc()->end_time);
+
+        cprintf("PID: %d, used %d ticks. terminated\n",
+                myproc()->pid,
+                myproc()->cpu_accumulate_time);
+        
+        release(&ptable.lock);
+        exit();
     }
 
-    if (myproc()->cpu_burst >= current_tq) { // 만약 cpu burst 시간이 정해진 time slice를 다 채웠다면
+    // time quantum 체크
+    if (myproc()->cpu_burst >= get_quantum(myproc()->q_level)) {
 
-      cprintf("PID: %d uses %d ticks in mlfq[%d], total(%d/%d)\n",
+        cprintf("PID: %d uses %d ticks in mlfq[%d], total(%d/%d)\n",
                 myproc()->pid,
                 myproc()->cpu_burst,
                 myproc()->q_level,
                 myproc()->cpu_accumulate_time,
                 myproc()->end_time);
+                
+        // 레벨 변경 및 카운터 초기화
+        if(myproc()->q_level < MAX_LEVEL) {
+            myproc()->q_level++;
+        }
 
-      if (myproc()->q_level < MAX_LEVEL) {
-        myproc()->q_level++;  // 큐 레벨 증가
-        myproc()->cpu_burst = 0;  // burst 시간 초기화
-        myproc()->cpu_wait = 0;    // wait 시간 초기화
-        myproc()->io_wait_time = 0; // io wait 시간 초기화
-      }
-      else { // 최하위 큐에서는 CPU Burst만 초기화해야함
-        myproc()->cpu_burst = 0;  // burst 시간 초기화
-      }
-      release(&ptable.lock);    // yield 전에 락 해제
+        myproc()->cpu_burst = 0;
+        myproc()->cpu_wait = 0;
+        myproc()->io_wait_time = 0;
 
-      #ifdef DEBUG
-      cprintf("Time quantum expired: pid %d, level %d, total_time %d\n",
-              myproc()->pid, myproc()->q_level,
-              myproc()->cpu_accumulate_time);
-      #endif
-
-      yield();
+        release(&ptable.lock);
+        yield();
+        return;
     }
-    else if (myproc()->cpu_accumulate_time >= myproc()->end_time &&
-               myproc()->end_time != -1) { // 만약 cpu 축적 시간이 정해진 실행 시간을 다 채웠고, 무한정 실행해야 하는게 아니라면
 
-      cprintf("PID: %d uses %d ticks in mlfq[%d], total(%d/%d)\n",
-                myproc()->pid,
-                myproc()->cpu_accumulate_time - (myproc()->cpu_accumulate_time - myproc()->cpu_burst),
-                myproc()->q_level,
-                myproc()->end_time,  // 최종 누적값은 end_time과 같다.
-                myproc()->end_time);
-
-      cprintf("PID: %d, used %d ticks. terminated\n",
-                myproc()->pid,
-                myproc()->cpu_accumulate_time);
-
-      #ifdef DEBUG
-      cprintf("Process terminated: pid %d, level %d, total_time %d\n",
-              myproc()->pid, myproc()->q_level,
-              myproc()->cpu_accumulate_time);
-      #endif
-
-      release(&ptable.lock);    // exit 전에 락 해제
-      exit();
-    }
-    else {
-      release(&ptable.lock);    // 일반적인 경우 락 해제
-    }
+    release(&ptable.lock);
   }
 
   // Check if the process has been killed since we yielded

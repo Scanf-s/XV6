@@ -11,8 +11,7 @@ struct { // 프로세스 테이블
   struct spinlock lock;
   struct proc proc[NPROC];
 } ptable;
-
-// 프로세스 테이블 구조체
+struct priority_queue mlfq[NQUEUE]; 
 static struct proc *initproc; // pid 1번 init 프로세스에 대한 전역 구조체
 
 int nextpid = 1;
@@ -22,9 +21,191 @@ extern void trapret(void);
 static void wakeup1(void *chan);
 
 void
-pinit(void)
+init_mlfq(void)
+{
+    for(int i = 0; i < NQUEUE; i++) {
+        mlfq[i].front = 0;
+        mlfq[i].rear = 0;
+        mlfq[i].size = 0;
+    }
+}
+
+int
+enqueue(int level, struct proc *p)
+{
+    if (!holding(&ptable.lock)) // ptable.lock이 잡혀있지 않은 경우
+      panic("Function requires ptable.lock to be held");
+
+    if (level < 0 || level >= NQUEUE) { // 큐 레벨이 범위를 벗어난 경우
+        cprintf("Invalid queue level\n");
+        return -1;
+    }
+
+    if(mlfq[level].size >= NPROC) // 큐가 가득 찬 경우
+        return -1;
+
+    if (mlfq[level].size == 0) { // 큐가 비어있는 경우
+        mlfq[level].front = 0;
+        mlfq[level].rear = 0;
+    } else {
+        mlfq[level].rear = (mlfq[level].rear + 1) % NPROC;
+    }
+
+    mlfq[level].queue[mlfq[level].rear] = p;
+    mlfq[level].size++;
+
+    // 우선순위 조건대로 큐를 정렬한다.
+    // 만약 io_wait_time이 더 크다면 더 높은 우선순위
+    // io_wait_time이 같다면 pid값이 더 큰 프로세스가 더 높은 우선순위
+    sort_queue(level);
+
+    return 0;
+}
+
+void 
+sort_queue(int level) {
+    int size = mlfq[level].size;
+    struct proc* temp_queue[NPROC];
+    int idx = mlfq[level].front;
+
+    // 큐의 현재 요소를 임시 배열로 복사
+    for(int i = 0; i < size; i++) {
+        temp_queue[i] = mlfq[level].queue[idx];
+        idx = (idx + 1) % NPROC;
+    }
+
+    // 임시 배열 정렬
+    for(int i = 0; i < size - 1; i++) {
+        for(int j = i + 1; j < size; j++) {
+            if (temp_queue[i]->io_wait_time > temp_queue[j]->io_wait_time ||
+                (temp_queue[i]->io_wait_time == temp_queue[j]->io_wait_time && temp_queue[i]->pid > temp_queue[j]->pid)) {
+                struct proc* tmp = temp_queue[i];
+                temp_queue[i] = temp_queue[j];
+                temp_queue[j] = tmp;
+            }
+        }
+    }
+
+    // 정렬된 배열을 큐에 다시 삽입
+    idx = mlfq[level].front;
+    for(int i = 0; i < size; i++) {
+        mlfq[level].queue[idx] = temp_queue[i];
+        idx = (idx + 1) % NPROC;
+    }
+}
+
+struct proc*
+dequeue(int level)
+{
+    if (!holding(&ptable.lock)) // ptable.lock이 잡혀있지 않은 경우
+      panic("Function requires ptable.lock to be held");
+    
+    if(mlfq[level].size <= 0)
+        return 0;  // 큐가 비어있는 경우
+        
+    struct proc *p = mlfq[level].queue[mlfq[level].front];
+    mlfq[level].front = (mlfq[level].front + 1) % NPROC;
+    mlfq[level].size--;
+    
+    if(mlfq[level].size == 0) {
+        mlfq[level].front = 0;
+        mlfq[level].rear = 0;
+    }
+    
+    return p;
+}
+
+void
+update_process_queue(struct proc *p, int new_level){
+    if (new_level < 0 || new_level >= NQUEUE) {
+        cprintf("Invalid queue level\n");
+        return;
+    }
+
+    int level = p->q_level;
+    int idx = mlfq[level].front;
+    int found = 0;
+
+    for (int i = 0; i < mlfq[level].size; i++) {
+        if (mlfq[level].queue[idx] == p) {
+            found = 1;
+            break;
+        }
+        idx = (idx + 1) % NPROC;
+    }
+
+    if (found) {
+        // 프로세스를 큐에서 제거
+        int next_idx = (idx + 1) % NPROC;
+        while (next_idx != (mlfq[level].rear + 1) % NPROC) {
+            mlfq[level].queue[idx] = mlfq[level].queue[next_idx];
+            idx = next_idx;
+            next_idx = (next_idx + 1) % NPROC;
+        }
+        mlfq[level].rear = (mlfq[level].rear - 1 + NPROC) % NPROC;
+        mlfq[level].size--;
+    }
+
+    // 새로운 큐에 프로세스를 삽입
+    enqueue(new_level, p);
+
+    p->q_level = new_level;
+    p->cpu_burst = 0;
+    p->cpu_wait = 0;
+    p->io_wait_time = 0;
+}
+
+int
+remove_from_queue(int level, struct proc *p)
+{
+    int idx = mlfq[level].front;
+    int found = 0;
+
+    if (!holding(&ptable.lock)) // ptable.lock이 잡혀있지 않은 경우
+      panic("Remove_from_queue : Function requires ptable.lock to be held");
+  
+    for (int i = 0; i < mlfq[level].size; i++) {
+        if (mlfq[level].queue[idx] == p) {
+            found = 1;
+            break;
+        }
+        idx = (idx + 1) % NPROC;
+    }
+  
+    if (found) {
+        // 프로세스를 큐에서 제거
+        int next_idx = (idx + 1) % NPROC;
+        while (next_idx != (mlfq[level].rear + 1) % NPROC) {
+            mlfq[level].queue[idx] = mlfq[level].queue[next_idx];
+            idx = next_idx;
+            next_idx = (next_idx + 1) % NPROC;
+        }
+        mlfq[level].rear = (mlfq[level].rear - 1 + NPROC) % NPROC;
+        mlfq[level].size--;
+        return 0;
+    }
+    return -1; // 프로세스를 찾지 못한 경우
+}
+
+
+int
+get_quantum(int level)
+{
+    switch(level) {
+        case 0: return TQ_0;
+        case 1: return TQ_1;
+        case 2: return TQ_2;
+        case 3: return TQ_3;
+        default: return TQ_3;
+    }
+}
+
+void
+pinit(void) // 프로세스 테이블 초기화하는 함수
 {
   initlock(&ptable.lock, "ptable");
+
+  init_mlfq();  // MLFQ 초기화
 }
 
 // Must be called with interrupts disabled
@@ -174,6 +355,14 @@ userinit(void)
   p->end_time = -1; // init이 종료되면 안되므로 -1로 설정
   p->cpu_accumulate_time = 0;
 
+  // MLFQ 큐에 추가
+  if(enqueue(p->q_level, p) < 0) {
+    panic("userinit: enqueue failed");  // 큐 삽입 실패 시 패닉
+  }
+  #ifdef DEBUG
+    cprintf("Init process enqueued to level %d\n", p->q_level);
+  #endif
+
   release(&ptable.lock);
 }
 
@@ -242,9 +431,21 @@ fork(void)
   if (np->pid == 2) { // SHELL 프로세스라면 q_level 3으로 고정
     // init.c를 보면, init 프로세스가 sh 프로세스를 생성하는것을 볼 수 있다. init은 1번이므로 당연히 2번은 sh 프로세스
     np->q_level = 3;
+    #ifdef DEBUG
+      cprintf("Shell process enqueued to level %d\n", np->q_level);
+    #endif
   }
 
   np->state = RUNNABLE; // state 변경
+
+  // MLFQ 큐에 추가
+  if(enqueue(np->q_level, np) < 0) {
+    release(&ptable.lock);
+    panic("fork: enqueue failed");
+  }
+  #ifdef DEBUG
+    cprintf("Process %d enqueued to level %d\n", pid, np->q_level);
+  #endif
 
   release(&ptable.lock);
 
@@ -369,73 +570,72 @@ wait(void)
 void
 scheduler(void)
 {
-  struct proc *p;  // 프로세스 구조체 포인터
-  struct cpu *c = mycpu();  // 현재 CPU 코어의 정보를 가져옴
-  c->proc = 0;  // 현재 CPU 코어가 실행 중인 프로세스 정보를 초기화
-
-  for(;;){  // 스케줄러는 무한 루프로 실행됨
-    // 현재 프로세서에서 인터럽트 활성화
+  struct proc *p;
+  struct cpu *c = mycpu();
+  c->proc = 0;
+  
+  for(;;){
     sti();
+    acquire(&ptable.lock);
 
-    // 프로세스 테이블을 순회하며 실행할 프로세스를 찾음
-    acquire(&ptable.lock);  // 프로세스 테이블 접근을 위한 락 획득
-
-    // Aging 메커니즘
+    // Aging check
     for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
-      if(p->state == RUNNABLE && p->cpu_wait >= AGING_THRESHOLD) { // 큐에서 대기한 시간이 250초 이상이라면
+      if(p->state == RUNNABLE && p->cpu_wait >= AGING_THRESHOLD) { // 만약 해당 프로세스의 CPU 대기시간이 250tick 이상이라면
         if (p->q_level > MIN_LEVEL) {
           p->q_level--;
+          update_process_queue(p, p->q_level); // 큐를 업데이트한다.
+          p->cpu_burst = 0;
           p->cpu_wait = 0;
-          cprintf("PID: %d Aging\n", p->pid);
-        }
-      }
-      else if (p->state == SLEEPING && p->io_wait_time >= AGING_THRESHOLD) { // SLEEP 상태가 250초 이상이라면
-        if (p->q_level > MIN_LEVEL) {
-          p->q_level--;
           p->io_wait_time = 0;
+          cprintf("PID: %d Aging to level %d\n", p->pid, p->q_level);
         }
       }
     }
 
-    // 우선순위 큐 순서대로 실행할 프로세스 찾기
-    for(int level = MIN_LEVEL; level <= MAX_LEVEL; level++) {
-      struct proc *selected = 0; // 선택할 프로세스
-      int max_io_wait = -1; // 최대 IO 대기 시간
-      int latest_pid = -1; // 가장 최근에 선택한 프로세스 PID
+    // 우선순위 큐에서 프로세스 선택
+    int found = 0;
+    struct proc *selected = 0;
+    int selected_level = -1;
 
-      // 현재 레벨에서 실행 가능한 프로세스 찾기
-      for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
-        if(p->state != RUNNABLE || p->q_level != level)
-          continue;
-
-        // io_wait_time이 더 크거나, io_wait_time이 같고 PID가 더 큰(나중에 생성된) 프로세스 선택
-        if(p->io_wait_time > max_io_wait ||
-           (p->io_wait_time == max_io_wait && p->pid > latest_pid)) {
-          max_io_wait = p->io_wait_time;
-          latest_pid = p->pid;
-          selected = p;
-        }
-
-        if (selected) {
-          // 프로세스를 찾았으면 실행
-          c->proc = p;
-          switchuvm(p);
-          p->state = RUNNING;
-
+    // 높은 우선순위부터 검사
+    for(int level = MIN_LEVEL; level <= MAX_LEVEL && !found; level++) {
+      if(mlfq[level].size > 0) {
+        selected = dequeue(level); // 이미 우선순위에 따라 정렬된 큐에서 하나 꺼내온다.
+        if(selected && selected->state == RUNNABLE) {
+          found = 1;
+          selected_level = level;
+        } else if(selected) {
+          // RUNNABLE이 아니면 다시 큐에 넣지 않음
           #ifdef DEBUG
-          cprintf("Scheduler selected: PID: %d, NAME: %s\n",
-                  p->pid, p->name);
+            cprintf("Removed non-RUNNABLE process %d from queue %d\n", 
+                  selected->pid, level);
           #endif
-          swtch(&(c->scheduler), p->context);
-          switchkvm();
-
-          c->proc = 0;
-          break;
         }
       }
-      if(selected) break;  // 프로세스를 찾았으면 상위 레벨 검사 중단
     }
 
+    if(found) {
+      p = selected;
+      #ifdef DEBUG
+        cprintf("Selected PID: %d from level %d\n", p->pid, selected_level);
+      #endif
+      
+      c->proc = p;
+      switchuvm(p);
+      p->state = RUNNING;
+
+      swtch(&(c->scheduler), p->context);
+      switchkvm();
+
+      c->proc = 0;
+
+      if(p->state == RUNNABLE) {
+        enqueue(p->q_level, p);
+        #ifdef DEBUG
+          cprintf("Process %d enqueued back to level %d\n", p->pid, p->q_level);
+        #endif
+      }
+    }
     release(&ptable.lock);
   }
 }
@@ -535,7 +735,7 @@ sleep(void *chan, struct spinlock *lk)
   p->chan = chan;
   p->state = SLEEPING;
 
-  sched(); // Sleep state로 변경했으니까 lock 가진 상태에서 sched 호출해저 context switch 전처리
+  sched(); // Sleep state로 변경했으니까 lock 가진 상태에서 sched 호출
 
   // 다시 깨어났다면, chan 초기화
   p->chan = 0;
@@ -556,8 +756,18 @@ wakeup1(void *chan)
   struct proc *p;
 
   for(p = ptable.proc; p < &ptable.proc[NPROC]; p++) // SLEEP STATE를 READY STATE로 변경
-    if(p->state == SLEEPING && p->chan == chan)
+    if(p->state == SLEEPING && p->chan == chan){
       p->state = RUNNABLE;
+
+      // RUNNABLE 상태가 되면 해당 레벨의 큐에 다시 삽입
+      if(enqueue(p->q_level, p) < 0) {
+        panic("wakeup1: enqueue failed");
+      }
+      #ifdef DEBUG
+        cprintf("Process %d enqueued back to level %d queue after wakeup\n", 
+              p->pid, p->q_level);  // 디버그 메시지
+      #endif
+    }
 }
 
 // Wake up all processes sleeping on chan.
@@ -580,10 +790,15 @@ kill(int pid)
   acquire(&ptable.lock);
   for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
     if(p->pid == pid){
-      p->killed = 1;
-      // Wake process from sleep if necessary.
-      if(p->state == SLEEPING)
+      p->killed = 1; // 프로세스를 종료하기 위해 killed flag를 설정
+      if(p->state == SLEEPING) {
         p->state = RUNNABLE;
+        // SLEEPING에서 RUNNABLE로 상태가 변경되므로 큐에 추가
+        if(enqueue(p->q_level, p) < 0) {
+          panic("kill: enqueue failed");
+        }
+        cprintf("Process %d (killed) enqueued to level %d\n", pid, p->q_level);
+      }
       release(&ptable.lock);
       return 0;
     }
