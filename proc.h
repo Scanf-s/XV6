@@ -59,6 +59,21 @@ struct proc {
   int cpu_accumulate_time;    // 얼마나 사용했는지 추적하기 위해 추가한 변수
 };
 
+struct priority_queue {
+  struct proc *queue[NPROC];  // 프로세스 구조체 포인터 배열
+  int front;                  // 큐의 front 인덱스
+  int rear;                   // 큐의 rear 인덱스
+  int size;                // 현재 큐의 크기
+};
+
+void init_mlfq(void);         // MLFQ 초기화 함수
+int enqueue(int, struct proc*);  // 큐에 프로세스 추가하는 함수
+void sort_queue(int);        // 큐 정렬 함수
+struct proc* dequeue(int);    // 큐에서 프로세스 제거하는 함수
+void update_process_queue(struct proc*, int); // 큐 업데이트 함수
+int remove_from_queue(int level, struct proc *p); // 큐에서 프로세스 제거 함수
+int get_quantum(int);   // 큐 레벨에 따른 time quantum 값 반환 함수
+
 // Process memory is laid out contiguously, low addresses first:
 //   text
 //   original data and bss
