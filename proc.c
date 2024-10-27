@@ -23,7 +23,7 @@ static void wakeup1(void *chan);
 void
 init_mlfq(void)
 {
-    for(int i = 0; i < NQUEUE; i++) {
+    for(int i = 0; i < NQUEUE; i++) { // 큐 초기화
         mlfq[i].front = 0;
         mlfq[i].rear = 0;
         mlfq[i].size = 0;
@@ -48,11 +48,11 @@ enqueue(int level, struct proc *p)
         mlfq[level].front = 0;
         mlfq[level].rear = 0;
     } else {
-        mlfq[level].rear = (mlfq[level].rear + 1) % NPROC;
+        mlfq[level].rear = (mlfq[level].rear + 1) % NPROC; // rear를 다음 위치로 이동
     }
 
-    mlfq[level].queue[mlfq[level].rear] = p;
-    mlfq[level].size++;
+    mlfq[level].queue[mlfq[level].rear] = p; // 큐에 프로세스 추가
+    mlfq[level].size++; // 큐 사이즈 증가
 
     // 우선순위 조건대로 큐를 정렬한다.
     // 만약 io_wait_time이 더 크다면 더 높은 우선순위
@@ -74,7 +74,7 @@ sort_queue(int level) {
         idx = (idx + 1) % NPROC;
     }
 
-    // 임시 배열 정렬
+    // 요구사항대로 버블 정렬.. 나중에 다른 정렬 알고리즘으로 바꿔보도록 하자!
     for(int i = 0; i < size - 1; i++) {
         for(int j = i + 1; j < size; j++) {
             if (temp_queue[i]->io_wait_time > temp_queue[j]->io_wait_time ||
@@ -190,7 +190,7 @@ remove_from_queue(int level, struct proc *p)
 
 int
 get_quantum(int level)
-{
+{ // 큐 레벨에 따른 time quantum 값 반환 함수 (param.h에 정의된 값 참고바람)
     switch(level) {
         case 0: return TQ_0;
         case 1: return TQ_1;
@@ -359,11 +359,12 @@ userinit(void)
   if(enqueue(p->q_level, p) < 0) {
     panic("userinit: enqueue failed");  // 큐 삽입 실패 시 패닉
   }
+
+  release(&ptable.lock);
+
   #ifdef DEBUG
     cprintf("Init process enqueued to level %d\n", p->q_level);
   #endif
-
-  release(&ptable.lock);
 }
 
 // Grow current process's memory by n bytes.
@@ -431,9 +432,6 @@ fork(void)
   if (np->pid == 2) { // SHELL 프로세스라면 q_level 3으로 고정
     // init.c를 보면, init 프로세스가 sh 프로세스를 생성하는것을 볼 수 있다. init은 1번이므로 당연히 2번은 sh 프로세스
     np->q_level = 3;
-    #ifdef DEBUG
-      cprintf("Shell process enqueued to level %d\n", np->q_level);
-    #endif
   }
 
   np->state = RUNNABLE; // state 변경
@@ -443,9 +441,6 @@ fork(void)
     release(&ptable.lock);
     panic("fork: enqueue failed");
   }
-  #ifdef DEBUG
-    cprintf("Process %d enqueued to level %d\n", pid, np->q_level);
-  #endif
 
   release(&ptable.lock);
 
@@ -763,10 +758,6 @@ wakeup1(void *chan)
       if(enqueue(p->q_level, p) < 0) {
         panic("wakeup1: enqueue failed");
       }
-      #ifdef DEBUG
-        cprintf("Process %d enqueued back to level %d queue after wakeup\n", 
-              p->pid, p->q_level);  // 디버그 메시지
-      #endif
     }
 }
 
@@ -797,13 +788,18 @@ kill(int pid)
         if(enqueue(p->q_level, p) < 0) {
           panic("kill: enqueue failed");
         }
-        cprintf("Process %d (killed) enqueued to level %d\n", pid, p->q_level);
       }
       release(&ptable.lock);
+      #ifdef DEBUG
+        cprintf("Process %d killed\n", pid);
+      #endif
       return 0;
     }
   }
   release(&ptable.lock);
+  #ifdef DEBUG
+    cprintf("Process %d not found\n", pid);
+  #endif
   return -1;
 }
 
