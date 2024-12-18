@@ -442,3 +442,80 @@ sys_pipe(void)
   fd[1] = fd1;
   return 0;
 }
+
+file_offset_t
+sys_lseek(void) {
+    int fd;
+    int offset;
+    int whence;
+    struct file *f;
+    /* file.h 구조체를 뜯어보자
+
+      type: FD_NONE, FD_PIPE, FD_INODE
+          FD_NONE : 파일이 사용되지 않거나 할당되지 않은 상태를 의미하는 타입
+          FD_PIPE : 프로세스 간 통신에 사용되는 파일 타입
+          FD_INODE : 우리가 익숙한 일반적인 파일 system에서 다루는 파일 타입이다.
+      ref: 파일을 참조한 횟수 -> 파일을 열때마다 이 값이 증가하고, 닫힐때마다 감소한다. (integer)
+      readable : 읽기 가능한지? 1: 가능 0: 불가능
+      writable : 쓰기 가능한지? 1: 가능 0: 불가능
+      *pipe : FD_PIPE 타입의 경우 사용되는 포인터... 인데 잘 모르겠다
+      *ip : FD_INODE 타입의 경우 사용되는 포인터 -> inode는 파일의 metadata(파일을 이루는 정보) 구조체 라고 한다. (파일 크기, 파일 위치, 권한, ...)
+    */
+
+    /*
+      1. lseek()는 파일 디스크립터(fd), 파일 오프셋(offset), 기준점(whence)을 인자로 받는다.
+         모두 integer 타입이어야 하며, 유효한 값인지 검증해야 한다.
+
+      fd: 파일 디스크립터
+        fd는 open() 함수에서 반환하는 값으로, 열린 파일을 식별하는 번호라고 생각하면 된다.
+        open() 함수 내부에서 fdalloc() 함수를 호출하여 파일 디스크립터 번호를 할당한다. (38번째 줄 확인)
+        fdalloc() 함수를 뜯어보면,
+          1. 현재 실행중인 proc을 가져온다.
+          2. 해당 proc의 ofile(해당 프로세스가 열고 있는 파일의 포인터들)을 확인해서 0인부분 (비어있는 부분)을 찾는다.
+          3. 비어있는 부분에 전달받은 파일 포인터를 넣고, 인덱스를 반환한다. 이게 파일 디스크립터 번호이다.
+        따라서 fd는 0부터 15 사이의 값을 가지며, 이를 통해 열린 파일을 관리한다. (ofile 크기가 애초에 16개로 지정되어 있음)
+
+      offset: 파일에서 기준점에 따라 얼마나 이동하는지?
+        whence값에 따라 다르게 해석해서 작동해야 한다.
+
+      whence: 파일 포인터 이동 기준위치
+        SEEK_SET(0) : 파일 시작점에서부터 offset만큼 이동한다.
+        SEEK_CUR(1) : 파일의 현재 위치부터 offset만큼 이동한다.
+        SEEK_END(2) : 파일의 끝에서부터 offset만큼 이동한다.
+    */
+    if (argint(0, &fd) < 0 || argint(1, &offset) < 0 || argint(2, &whence) < 0) {
+        return -1;
+    }
+
+    // fdalloc()의 결과로 proc의 ofile에 할당된 fd 인덱스에 정상적인 값이 들어있지 않은 경우
+    if ((f = myproc()->ofile[fd]) == 0) {
+        return -1;
+    }
+
+    // 파일 타입 검사 -> 우리가 사용하는 일반적인 타입인 FD_INODE 타입이 아닌 경우
+    if (f->type != FD_INODE) {
+        return -1;
+    }
+
+    // whence에 따라 새로운 파일 offset을 계산해준다.
+    int updated_offset = -1;
+    switch (whence) {
+        case SEEK_SET:
+            // 제일 처음 기준으로 갱신 -> 그냥 새로운 offset 그 자체로 갱신
+            updated_offset = offset;
+            break;
+        case SEEK_CUR:
+            // 현재 위치 기준으로 갱신 -> 파일의 현재 offset + 추가하려는 offset 으로 갱신
+            updated_offset = f->off + offset;
+            break;
+        case SEEK_END: // 파일의 맨 끝 기준으로 갱신
+            updated_offset = f->ip->size + offset;
+            break;
+        default:
+            return -1;
+    }
+
+    // 파일의 오프셋 설정.
+    f->off = updated_offset;
+    return updated_offset;
+}

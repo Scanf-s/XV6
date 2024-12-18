@@ -104,6 +104,7 @@ extern int sys_wait(void);
 extern int sys_write(void);
 extern int sys_uptime(void);
 extern int sys_set_proc_info(void);
+extern file_offset_t sys_lseek(void); // 시스템 콜 함수 정의
 
 static int (*syscalls[])(void) = {
 [SYS_fork]    sys_fork,
@@ -130,6 +131,10 @@ static int (*syscalls[])(void) = {
 [SYS_set_proc_info] sys_set_proc_info,
 };
 
+static file_offset_t (*customsyscalls[])(void) = {
+[SYS_lseek]   sys_lseek,
+};
+
 void
 syscall(void)
 {
@@ -139,6 +144,9 @@ syscall(void)
   num = curproc->tf->eax;
   if(num > 0 && num < NELEM(syscalls) && syscalls[num]) {
     curproc->tf->eax = syscalls[num]();
+  } else if (num == SYS_lseek) {
+      // sys_leek 호출하였다면
+      curproc->tf->eax = customsyscalls[num]();
   } else {
     cprintf("%d %s: unknown sys call %d\n",
             curproc->pid, curproc->name, num);
